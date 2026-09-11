@@ -53,6 +53,25 @@ Two easy to get wrong:
 - New prose use `KiCad`, but existing codebase use `KiCAD` in ~400 places and is **not** to be mass-renamed. Match surrounding style when edit existing text.
 - Konnect-owned JSON keys and tool arguments are `snake_case`. Protocol-defined MCP and JSON-RPC fields keep spec spelling (`jsonrpc`, `serverInfo`, `tools/list`). KiCad plugin manifests keep KiCad's field names.
 
+## Nets: identity vs. name
+
+A net's identity is its `NetGraph` root (`sch_connectivity.rs`), never its name. One
+net carry several names — a rail a `+3V3` power symbol name that also have a `VCC`
+label, a local label on a net that also carry a global one — so two names on one net
+fail a name comparison against itself. Compare `root_at`; use `name_of_root`/`net_at`
+only to *report* a net.
+
+A root is the net, not the wire: `seed_net_graph` join by geometry and then
+`merge_named_nets` join the points that share a name, because KiCad net a sheet by name
+as well as by wire. Two segments carrying one `SIG` label are one net, and every `GND`
+symbol on the sheet is one rail. Skip that merge and a decoupling cap on its own stub
+share no net with the pin it decouple.
+
+When a net's name must be chosen, use KiCad's precedence, which `driver_priority`
+carry: global label > power symbol > local label > hierarchical label, ties on the name
+ascending. Measured against KiCad 10.0.5 — a power symbol outrank a local label, which
+is why a label cannot rename a rail.
+
 ## Schematic file writes
 
 Writes to existing `.kicad_sch` files go through revision-checked atomic replacement: read exact source, take cooperative lock, reject any intervening KiCad or Konnect change, write sibling scratch file, fsync, rename.
