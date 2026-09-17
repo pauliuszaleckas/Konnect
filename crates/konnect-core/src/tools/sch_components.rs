@@ -218,7 +218,10 @@ pub fn tools() -> Vec<ToolDef> {
         tool!(
             "rotate_schematic_component",
             "Set the lowest-numbered unit's absolute rotation and rotate every other placed \
-             unit by the same delta. Does NOT adjust connected wires. Junction dots are \
+             unit by the same delta. Does NOT adjust connected wires. Each unit's \
+             Reference and Value text turns with its body, keeping any offset the caller \
+             gave it; use reset_schematic_field_positions to put fields back on their \
+             library anchors instead. Junction dots are \
              re-judged where the pins turned, reported as junctions_pruned_count and \
              junctions_added_count. A no-connect flag travels with the pin it protects, \
              reported as no_connects_moved; the turn is refused before writing when that \
@@ -5555,6 +5558,232 @@ mod tests {
         assert!(
             value.contains("(at 101.6 50.8 90)"),
             "Value must follow the rotated body: {value}"
+        );
+    }
+
+    /// A sheet carrying one `lib_symbols` definition and nothing placed.
+    fn sheet_with_library(directory: &std::path::Path, name: &str, definition: &str) -> String {
+        let path = directory.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                "(kicad_sch\n  (version 20250610)\n  (generator \"konnect\")\n  (uuid \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\")\n  (paper \"A4\")\n  (lib_symbols\n{definition}\n  )\n)\n"
+            ),
+        )
+        .unwrap();
+        path.display().to_string()
+    }
+
+    /// Sheet position and stored angle of a symbol's Reference and Value text.
+    /// The angle is returned because `set_rotation` must leave it alone.
+    fn field_positions(path: &str, reference: &str) -> [(f64, f64, f64); 2] {
+        let sch = cse::Schematic::load(std::path::Path::new(path)).unwrap();
+        let symbol = sch
+            .symbols
+            .iter()
+            .find(|symbol| symbol.reference() == Some(reference))
+            .expect("placed symbol");
+        ["Reference", "Value"].map(|name| {
+            let at = symbol
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+                .expect("field")
+                .sub_nodes
+                .iter()
+                .find_map(cse::types::At::from_sexp)
+                .expect("field position");
+            (at.x, at.y, at.rotation.unwrap_or(0.0))
+        })
+    }
+
+    /// Place `lib_id` as `X1` at (101.6, 50.8) — already on the 1.27mm grid the
+    /// placement snaps to, so the origin is the one that was asked for.
+    async fn place_at(path: &str, lib_id: &str, mirror: Option<&str>, rotation: f64) {
+        let mut args = json!({
+            "schematic": path,
+            "lib_id": lib_id,
+            "x": 101.6,
+            "y": 50.8,
+            "rotation": rotation,
+            "reference": "X1",
+            "value": "PART"
+        });
+        if let Some(axis) = mirror {
+            args["mirror"] = json!(axis);
+        }
+        let result = handle_add_schematic_component(&args, &test_ctx())
+            .await
+            .unwrap();
+        assert!(!result.is_error, "{result:?}");
+    }
+
+    /// Place `lib_id` at (101.6, 50.8) and return where its Reference and
+    /// Value text land — once for a symbol placed at `rotation` outright, and
+    /// once for the same symbol placed unrotated and turned to `rotation`
+    /// afterwards. The two must agree.
+    async fn placed_rotated_against_rotated_after_placing(
+        lib_id: &str,
+        definition: &str,
+        mirror: Option<&str>,
+        rotation: f64,
+    ) -> ([(f64, f64, f64); 2], [(f64, f64, f64); 2]) {
+        let directory = tempfile::tempdir().unwrap();
+        let straight_to_angle =
+            sheet_with_library(directory.path(), "placed.kicad_sch", definition);
+        place_at(&straight_to_angle, lib_id, mirror, rotation).await;
+
+        let turned_afterwards =
+            sheet_with_library(directory.path(), "turned.kicad_sch", definition);
+        place_at(&turned_afterwards, lib_id, mirror, 0.0).await;
+        let result = handle_rotate_schematic_component(
+            &json!({
+                "schematic": turned_afterwards,
+                "reference": "X1",
+                "rotation": rotation
+            }),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+        assert!(!result.is_error, "{result:?}");
+
+        (
+            field_positions(&straight_to_angle, "X1"),
+            field_positions(&turned_afterwards, "X1"),
+        )
+    }
+
+    /// `Device:LED`'s anchors, as KiCad ships them: Reference 2.54mm above the
+    /// origin, Value 2.54mm below. A horizontal body clears both; the 90° body
+    /// runs straight through them, which is what made this visible.
+    const LED_DEFINITION: &str = "    (symbol \"Device:LED\"\n      (property \"Reference\" \"D\" (at 0 2.54 0))\n      (property \"Value\" \"LED\" (at 0 -2.54 0))\n    )";
+
+    /// `Regulator_Linear:AP2112K-3.3`'s Reference anchor, which is off both
+    /// axes — the only shape that can tell a quarter turn from its reverse.
+    const OFF_AXIS_DEFINITION: &str = "    (symbol \"Regulator_Linear:AP2112K-3.3\"\n      (property \"Reference\" \"U\" (at -5.08 5.715 0))\n      (property \"Value\" \"AP2112K-3.3\" (at 0 5.715 0))\n    )";
+
+    /// Rotating a placed symbol left its field text where the body used to be:
+    /// `set_rotation` wrote the new angle and nothing else, while property
+    /// `(at …)` coordinates are absolute. A `Device:LED` turned to 90° kept
+    /// its Reference 2.54mm above the origin — the middle of the now-vertical
+    /// body, under the wire into its anode.
+    ///
+    /// The expectation is not recomputed from the code under test: it is where
+    /// *placing* the same symbol at 90° puts the same fields, a path
+    /// `rotated_symbol_carries_its_fields_around_with_it` already pins against
+    /// eeschema's own numbers. The literal is stated as well, so the two paths
+    /// agreeing on the wrong point would still fail.
+    #[tokio::test]
+    async fn rotating_a_placed_symbol_carries_its_field_text_around() {
+        let (placed_rotated, turned) =
+            placed_rotated_against_rotated_after_placing("Device:LED", LED_DEFINITION, None, 90.0)
+                .await;
+        // 2.54mm above the origin becomes 2.54mm to its left, clearing the
+        // vertical body instead of lying along it.
+        assert_eq!(turned, [(99.06, 50.8, 0.0), (104.14, 50.8, 0.0)]);
+        assert_eq!(turned, placed_rotated);
+    }
+
+    /// A placement mirrors after it rotates, so a mirrored body turns its
+    /// fields the opposite way. The case needs an anchor off both axes and a
+    /// quarter turn: `Device:LED`'s anchors are symmetric about the origin, so
+    /// the reversal swaps the two fields and lands on the same pair of points,
+    /// and 180° is its own reverse.
+    #[tokio::test]
+    async fn rotating_a_mirrored_symbol_turns_its_fields_the_other_way() {
+        let (placed_rotated, turned) = placed_rotated_against_rotated_after_placing(
+            "Regulator_Linear:AP2112K-3.3",
+            OFF_AXIS_DEFINITION,
+            Some("x"),
+            90.0,
+        )
+        .await;
+        assert_eq!(turned[0], (95.885, 45.72, 0.0));
+        assert_eq!(turned, placed_rotated);
+
+        // Turning it the unmirrored way would put the Reference here, which is
+        // a different point — so this test fails if the mirror is ignored.
+        let (_, unmirrored) = placed_rotated_against_rotated_after_placing(
+            "Regulator_Linear:AP2112K-3.3",
+            OFF_AXIS_DEFINITION,
+            None,
+            90.0,
+        )
+        .await;
+        assert_eq!(unmirrored[0], (95.885, 55.88, 0.0));
+    }
+
+    /// A full turn must land back where it started, with no drift accumulated
+    /// through the trigonometry.
+    #[tokio::test]
+    async fn turning_a_symbol_back_restores_its_field_positions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = sheet_with_library(directory.path(), "roundtrip.kicad_sch", LED_DEFINITION);
+        handle_add_schematic_component(
+            &json!({
+                "schematic": path,
+                "lib_id": "Device:LED",
+                "x": 101.6,
+                "y": 50.8,
+                "reference": "D1",
+                "value": "Green"
+            }),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+        let placed = std::fs::read_to_string(&path).unwrap();
+
+        for rotation in [90.0, 180.0, 270.0, 0.0] {
+            let result = handle_rotate_schematic_component(
+                &json!({ "schematic": path, "reference": "D1", "rotation": rotation }),
+                &test_ctx(),
+            )
+            .await
+            .unwrap();
+            assert!(!result.is_error, "{result:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            placed,
+            "a full turn must land back on the placed file, byte for byte"
+        );
+    }
+
+    /// The turn carries a field the caller positioned by hand round as readily
+    /// as one still on its library anchor: the offset turns, it is not reset to
+    /// the anchor. `reset_schematic_field_positions` is the tool that discards
+    /// a manual offset, and it must stay the only one.
+    #[tokio::test]
+    async fn turning_a_symbol_carries_a_hand_placed_field_offset_round() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("moved-field.kicad_sch");
+        // The same anchors as LED_DEFINITION, with D1 already placed and its
+        // Reference dragged well off them.
+        std::fs::write(
+            &path,
+            format!("(kicad_sch\n  (version 20250610)\n  (generator \"konnect\")\n  (uuid \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\")\n  (paper \"A4\")\n  (lib_symbols\n{LED_DEFINITION}\n  )\n  (symbol\n    (lib_id \"Device:LED\")\n    (at 101.6 50.8 0)\n    (unit 1)\n    (uuid \"bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee\")\n    (property \"Reference\" \"D1\" (at 111.6 40.8 0))\n    (property \"Value\" \"Green\" (at 101.6 53.34 0))\n  )\n)\n"),
+        )
+        .unwrap();
+
+        let result = handle_rotate_schematic_component(
+            &json!({
+                "schematic": path.display().to_string(),
+                "reference": "D1",
+                "rotation": 90.0
+            }),
+            &test_ctx(),
+        )
+        .await
+        .unwrap();
+        assert!(!result.is_error, "{result:?}");
+
+        let source = std::fs::read_to_string(&path).unwrap();
+        // (10, -10) from the origin, turned a quarter: (-10, -10).
+        assert!(
+            source.contains("(at 91.6 40.8 0)"),
+            "a hand-placed offset turns with the body: {source}"
         );
     }
 

@@ -153,12 +153,47 @@ pub fn transform_pad(
     fp_y: f64,
     rotation_deg: f64,
 ) -> (f64, f64) {
+    rotate_about(local_x, local_y, fp_x, fp_y, rotation_deg)
+}
+
+/// Rotate the offset `(dx, dy)` about `(origin_x, origin_y)` by
+/// `rotation_deg`, screen-CCW in KiCAD's Y-down space, and return the absolute
+/// point.
+///
+/// This is the bare rotation step shared by [`transform_pad`] and by
+/// `.kicad_sch` field text, whose `(at …)` is an absolute coordinate that has
+/// to turn with the body it labels. Both live on the *same* sign pattern —
+/// `+lx*sin` on the Y term, not the textbook `-lx*sin` — which is why they
+/// share one implementation rather than two that can drift:
+/// `pad_transform_rejects_textbook_rotation` guards it for both.
+///
+/// Unlike [`transform_pin`] this applies no Y-up→Y-down flip and no mirror.
+/// Callers holding an already-placed, already-mirrored coordinate want exactly
+/// this — a reflection reverses the sense of a rotation conjugated by it, so
+/// they negate `rotation_deg` instead of reflecting twice.
+///
+/// # Examples
+/// ```
+/// use konnect_sexp::geometry::rotate_about;
+///
+/// // 2.54mm above an origin, turned a quarter turn, lands to its left.
+/// let (x, y) = rotate_about(0.0, -2.54, 101.6, 50.8, 90.0);
+/// assert!((x - 99.06).abs() < 1e-9);
+/// assert!((y - 50.8).abs() < 1e-9);
+/// ```
+pub fn rotate_about(
+    dx: f64,
+    dy: f64,
+    origin_x: f64,
+    origin_y: f64,
+    rotation_deg: f64,
+) -> (f64, f64) {
     let theta = rotation_deg * PI / 180.0;
     let cos_t = theta.cos();
     let sin_t = theta.sin();
     (
-        fp_x + local_x * cos_t + local_y * sin_t,
-        fp_y - local_x * sin_t + local_y * cos_t,
+        origin_x + dx * cos_t + dy * sin_t,
+        origin_y - dx * sin_t + dy * cos_t,
     )
 }
 

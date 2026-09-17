@@ -356,6 +356,34 @@ free number for a prefix (a gap between `R1` and `R3` is filled; before, the
 next number was always the maximum plus one), and `#`-prefixed designators
 spelled `#PWR01`, `#PWR010`, `#PWR0100` as eeschema spells them (before:
 `#PWR1`). Both places a designator lives are written.
+## Unreleased: `rotate_schematic_component` carries field text round (patch release)
+
+`rotate_schematic_component` wrote the symbol's new angle and nothing else.
+A field's `(at …)` is an absolute sheet coordinate, not an offset from the
+body, so Reference and Value stayed where the old orientation had put them:
+a `Device:LED` placed horizontally and then turned to 90° kept its designator
+2.54mm above the origin, which is the middle of the vertical body and the wire
+into its anode (#612).
+
+The turn now rotates each field's position about the symbol origin, so a
+symbol placed unrotated and turned afterwards ends up field-for-field
+identical to the same symbol placed at that angle outright — the placement
+path has transformed its anchors since #101. A reflected body turns its fields
+the opposite way, matching the rotate-then-mirror order a placement uses —
+counting axes, not the token's presence, so `(mirror xy)` (two reflections, a
+proper 180° turn) and `(mirror none)` turn the unreflected way.
+
+A field's stored *angle* is unchanged, and deliberately so: KiCad adds the
+symbol's rotation to it when drawing, so turning the angle here would draw the
+text at twice the angle.
+
+No argument and no response key changed. A caller that positioned a field by
+hand keeps that offset, carried round with the body rather than reset — the
+offset rotates, so its absolute coordinates change.
+`reset_schematic_field_positions` remains the only tool that discards a manual
+offset and puts fields back on their library anchors; it is also the repair
+for sheets a previous version left behind, and it already accounted for
+rotation.
 
 ## Unreleased: `trace_from_point` reports pins and junctions (minor release)
 
