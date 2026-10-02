@@ -19,6 +19,15 @@ stdio transport's JSON-RPC stream. Its stderr is read by the server and written
 to the server log as `schematic_viewer` warnings, so that output now stops when
 the server exits (#702).
 
+## Unreleased: grid-snapped coordinates are written as KiCad writes them (patch release)
+
+A point snapped to the 1.27 mm grid is now rounded to the six decimals KiCad
+writes. `bulk_move_schematic_components` used to write a symbol at
+132 × 1.27 as `(at … 167.64000000000001 …)` and report the same value as
+`placements[].new_y`. It now writes and reports `167.64`, and `add_wire`'s
+`added_wire` echo is rounded the same way. The values differ by less than
+1e-12 mm; nothing else in the request or response changes (#744).
+
 ## Unreleased: `konnect init` refreshes stale Claude hook matchers (patch release)
 
 A hook's `matcher` is built from the tool registry, so it changes when a board
