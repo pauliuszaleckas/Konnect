@@ -9009,8 +9009,6 @@ mod mirror_field_text_tests {
     /// fields on the reflected library anchors, as eeschema wrote them.
     const DEMO: &str =
         include_str!("../../tests/fixtures/project_ownership/complex_hierarchy.kicad_sch");
-    /// Also drawn in KiCad: an inductor placed both turned and reflected.
-    const VIDEO: &str = include_str!("../../tests/fixtures/kicad_demo_video/modul.kicad_sch");
 
     /// How far below each symbol its reflected twin sits.
     const TWIN_OFFSET_MM: f64 = 25.4;
@@ -9110,11 +9108,58 @@ mod mirror_field_text_tests {
     /// and mirror-then-rotate does not. Unreflected, the turn alone puts it
     /// 2.54mm below. A reflection taken in the symbol's own frame would move X
     /// instead and leave it above.
+    ///
+    /// The sheet is KiCad's `video` demo, read from the local install because
+    /// its CC BY-SA licence keeps it out of the repo. The test skips when no
+    /// install is found, or when the installed sheet no longer places L2 so.
     #[test]
     fn clearing_a_kicad_drawn_mirror_on_a_turned_symbol_reflects_in_sheet_axes() {
-        assert_eq!(field_positions(VIDEO, "L2")[1], (109.22, 35.56, 90.0));
+        let Some(video) = installed_demo("video/modul.kicad_sch") else {
+            eprintln!("SKIP: no KiCad demos found (set KICAD_DEMOS to enable)");
+            return;
+        };
+        let schematic = cse::Schematic::from_source(std::path::Path::new("sheet"), video.clone())
+            .expect("demo parses");
+        let Some(l2) = schematic
+            .symbols
+            .iter()
+            .find(|symbol| symbol.reference() == Some("L2"))
+            .filter(|l2| l2.at.rotation == Some(270.0) && l2.mirror.as_deref() == Some("x"))
+        else {
+            eprintln!("SKIP: video/modul.kicad_sch no longer places L2 at 270° with (mirror x)");
+            return;
+        };
+        // Offsets from L2's origin, so a demo that moves L2 still checks.
+        let (x, y) = (l2.at.x, l2.at.y);
+        let value_offset = |fields: [(f64, f64, f64); 2]| {
+            to_nanometres(fields.map(|(fx, fy, angle)| (fx - x, fy - y, angle)))[1]
+        };
+        let expected = |dy: f64| to_nanometres([(0.0, dy, 90.0); 2])[1];
 
-        assert_eq!(mirrored(VIDEO, "L2", None)[1], (109.22, 40.64, 90.0));
+        assert_eq!(value_offset(field_positions(&video, "L2")), expected(-2.54));
+
+        assert_eq!(value_offset(mirrored(&video, "L2", None)), expected(2.54));
+    }
+
+    /// A KiCad demo sheet under `KICAD_DEMOS`, else under the standard install
+    /// paths — the lookup `tests/conformance_test.rs` uses.
+    fn installed_demo(sheet: &str) -> Option<String> {
+        let override_dir = std::env::var_os("KICAD_DEMOS").map(std::path::PathBuf::from);
+        let candidates: &[&str] = if cfg!(target_os = "windows") {
+            &[
+                r"C:\KiCad\10.0\share\kicad\demos",
+                r"C:\Program Files\KiCad\10.0\share\kicad\demos",
+            ]
+        } else if cfg!(target_os = "macos") {
+            &["/Applications/KiCad/KiCad.app/Contents/SharedSupport/demos"]
+        } else {
+            &["/usr/share/kicad/demos", "/usr/local/share/kicad/demos"]
+        };
+        override_dir
+            .into_iter()
+            .chain(candidates.iter().map(std::path::PathBuf::from))
+            .find(|dir| dir.exists())
+            .and_then(|dir| std::fs::read_to_string(dir.join(sheet)).ok())
     }
 
     /// A field the caller moved by hand keeps its offset, reflected with the
