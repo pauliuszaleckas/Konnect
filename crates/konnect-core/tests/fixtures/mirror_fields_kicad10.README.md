@@ -70,9 +70,16 @@ That order, and the reflection itself, are checked against sheets KiCad drew:
   `(mirror y)` at x = 41.91, whose library anchors put Reference at local
   x = −1.27 and Value at +1.27. Eeschema wrote them at 43.18 and 40.64, on the
   reflected side, and clearing the mirror must restore 40.64 and 43.18.
-- `kicad_demo_video/modul.kicad_sch`: `L2` is turned 270° and `(mirror x)`, and
-  its Value sits where rotate-then-mirror puts it and mirror-then-rotate does
-  not. Its README has the case and a count across KiCad's demo sheets.
+- KiCad's `video` demo, `video/modul.kicad_sch`: `L2` is turned 270° and
+  `(mirror x)`. Its library anchors the Value at (2.54, 0), and eeschema wrote
+  it 2.54mm above the origin, where rotate-then-mirror puts it and
+  mirror-then-rotate does not. Clearing the mirror must move it 2.54mm below.
+  Across the 25 demo sheets in KiCad 10.0.6 that place a symbol mirrored at
+  90° or 270°, 206 Reference and Value fields sit on a library anchor that the
+  two orders place differently; all 206 match rotate-then-mirror. The demos
+  are CC BY-SA 4.0, so the test reads this sheet from the installed KiCad
+  (`KICAD_DEMOS`, then the standard install paths, as `conformance_test.rs`
+  does) and skips when none is found or L2 is no longer placed that way.
 
 ## ERC
 
