@@ -101,3 +101,18 @@ places the five pins where the label table above has them:
 `batch_get_schematic_pin_locations`, and the 2.54 mm stub ends from the table
 above in `batch_connect_to_net`'s `wire` and `label`. Before the fix the
 responses said `116.83999999999999` and `93.97999999999999`.
+
+## `add_schematic_text` coordinates (#828)
+
+`sch_batch.rs`'s `the_served_dispatch_writes_the_coordinates_kicad_writes` adds
+text `"hi"` to a copy of this sheet. The oracle is KiCad 10.0.6 resaving the
+text an unfixed build wrote:
+
+```text
+kicad-cli sch upgrade --force <copy>.kicad_sch
+```
+
+| Written by the unfixed build | KiCad's resave |
+|---|---|
+| `(at 54.60999999999999 27.939999999999998 0)` | `(at 54.61 27.94 0)` |
+| `(at 54.61 27.94 90.00000000000001)` | `(at 54.61 27.94 90)` |
